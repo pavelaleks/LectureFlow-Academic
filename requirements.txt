@@ -9,4 +9,5 @@ markdown-it-py
 pdfplumber
 pymupdf
 python-docx
+pyalex
 

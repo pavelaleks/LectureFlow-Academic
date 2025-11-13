@@ -3,10 +3,13 @@ Lecture Wizard Page for Streamlit.
 """
 import streamlit as st
 from pathlib import Path
+import tempfile
+import os
 from src.core.course_manager import CourseManager
 from src.core.lecture_pipeline import LecturePipeline
 from src.ui.components import display_bibliography_table, display_key_ideas, display_summary
 from src.utils.io_utils import read_text, read_json
+from src.export.docx_exporter import export_lecture_to_docx
 import config
 import uuid
 
@@ -170,15 +173,34 @@ def render_lecture_wizard_page():
                     core_authors=core_authors,
                     recent_keywords=recent_keywords
                 )
+                
+                # Count total results
+                core_count = len(bibliography.get("core", []))
+                recent_count = len(bibliography.get("recent", []))
+                total_count = core_count + recent_count
+                
                 st.session_state.bibliography = bibliography
-                st.success("Библиография сгенерирована!")
+                
+                if total_count > 0:
+                    st.success(f"Библиография сгенерирована! Найдено {total_count} работ (core: {core_count}, recent: {recent_count})")
+                    st.info(f"📘 OpenAlex: найдено {total_count} релевантных работ")
+                else:
+                    st.warning("⚠️ OpenAlex не вернул результатов. Попробуйте упростить ключевые слова или изменить параметры поиска.")
             except Exception as e:
                 st.error(f"Ошибка: {str(e)}")
+                import traceback
+                st.error(f"Детали ошибки: {traceback.format_exc()}")
     
     if "bibliography" in st.session_state:
         bibliography = st.session_state.bibliography
-        display_bibliography_table(bibliography.get("core", []), "Основные работы (Core)")
-        display_bibliography_table(bibliography.get("recent", []), "Недавние работы (Recent)")
+        core_count = len(bibliography.get("core", []))
+        recent_count = len(bibliography.get("recent", []))
+        
+        if core_count == 0 and recent_count == 0:
+            st.warning("⚠️ OpenAlex не вернул результатов. Попробуйте упростить ключевые слова.")
+        else:
+            display_bibliography_table(bibliography.get("core", []), "Основные работы (Core)")
+            display_bibliography_table(bibliography.get("recent", []), "Недавние работы (Recent)")
     
     # Step 5: Bibliography Summary
     st.header("Шаг 5: Резюме библиографии")
@@ -239,48 +261,226 @@ def render_lecture_wizard_page():
     # Step 7: Draft → Revision → Glossary
     st.header("Шаг 7: Генерация лекции")
     
-    col1, col2, col3 = st.columns(3)
+    # Model selection
+    st.subheader("Выбор модели для генерации")
+    from src.llm.model_registry import MODEL_REGISTRY
+    
+    # Set default index to grok-4-fast-reasoning if available
+    default_index = 0
+    if "grok-4-fast-reasoning" in MODEL_REGISTRY:
+        default_index = MODEL_REGISTRY.index("grok-4-fast-reasoning")
+    
+    selected_model = st.selectbox(
+        "Выберите модель",
+        options=MODEL_REGISTRY,
+        index=default_index,
+        help="Grok reasoning — лучший для сложных задач и PDF. DeepSeek — быстрый и экономичный. GPT — качественный стиль."
+    )
+    
+    # Display selected model
+    st.info(f"📌 Модель, которая будет использоваться: **{selected_model}**")
+    
+    # Store in session state
+    st.session_state["model_choice"] = selected_model
+    
+    # Check model availability
+    if selected_model.startswith("grok"):
+        try:
+            import os
+            if not os.getenv("GROK_API_KEY"):
+                st.warning("⚠️ GROK_API_KEY не установлен в переменных окружения. Grok недоступен.")
+                selected_model = "deepseek-chat"
+                st.session_state["model_choice"] = selected_model
+        except:
+            pass
+    
+    # Create 5 columns for all generation buttons
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
+        if st.button("Сгенерировать краткий черновик"):
+            if "outline" not in st.session_state:
+                st.warning("Сначала сгенерируйте план.")
+            else:
+                with st.spinner("Генерация краткого черновика..."):
+                    try:
+                        from src.core.brief_draft_generator import generate_brief_draft
+                        
+                        # Get lecture metadata
+                        lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                        metadata = {
+                            "title": lecture.get("title", "") if lecture else "",
+                            "subtitle": lecture.get("subtitle", "") if lecture else "",
+                            "keywords": lecture.get("keywords", []) if lecture else []
+                        }
+                        
+                        # Get PDF summary if available
+                        sources_data = st.session_state.get("sources_data", {})
+                        pdf_summary = sources_data.get("full_summary", "")
+                        
+                        # Generate brief draft
+                        brief_draft = generate_brief_draft(
+                            metadata=metadata,
+                            pdf_summary=pdf_summary,
+                            model_name=selected_model
+                        )
+                        
+                        st.session_state["brief_draft"] = brief_draft
+                        st.success("Краткий черновик готов!")
+                    except Exception as e:
+                        st.error(f"Ошибка: {str(e)}")
+    
+    with col2:
         if st.button("Сгенерировать черновик"):
             if "outline" not in st.session_state:
                 st.warning("Сначала сгенерируйте план.")
             else:
                 with st.spinner("Генерация черновика (это может занять время)..."):
                     try:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
                         sources_data = st.session_state.get("sources_data", {})
                         bibliography = st.session_state.get("bibliography", {"core": [], "recent": []})
+                        
+                        status_text.text("🔄 Инициализация генерации...")
+                        progress_bar.progress(10)
+                        
+                        status_text.text("📝 Генерация основного текста...")
+                        progress_bar.progress(30)
                         
                         draft = pipeline.run_draft_step(
                             course_id=selected_course_id,
                             lecture_id=lecture_id,
                             outline_text=st.session_state.outline,
                             uploaded_sources_keypoints=sources_data.get("key_ideas", []),
-                            bibliography=bibliography
+                            bibliography=bibliography,
+                            model_name=selected_model
                         )
+                        
+                        from src.utils.text_postprocessing import count_words
+                        word_count = count_words(draft)
+                        
+                        # Get target length for display
+                        lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                        target_length = lecture.get("target_length", 4000) if lecture else 4000
+                        
+                        if word_count >= target_length:
+                            status_text.text(f"✅ Черновик готов: {word_count} слов (цель: {target_length})")
+                        else:
+                            status_text.text(f"⚙️ Расширение до целевого объёма... ({word_count} → {target_length} слов)")
+                            progress_bar.progress(70)
+                            # Pipeline will handle expansion automatically
+                            draft = pipeline.run_draft_step(
+                                course_id=selected_course_id,
+                                lecture_id=lecture_id,
+                                outline_text=st.session_state.outline,
+                                uploaded_sources_keypoints=sources_data.get("key_ideas", []),
+                                bibliography=bibliography,
+                                model_name=selected_model
+                            )
+                            final_word_count = count_words(draft)
+                            status_text.text(f"✅ Черновик готов: {final_word_count} слов (цель: {target_length})")
+                        
+                        progress_bar.progress(100)
                         st.session_state.draft = draft
-                        st.success("Черновик создан!")
+                        st.success(f"Черновик создан! Объём: {count_words(draft)} слов")
+                        progress_bar.empty()
+                        status_text.empty()
                     except Exception as e:
                         st.error(f"Ошибка: {str(e)}")
+                        import traceback
+                        st.error(f"Детали: {traceback.format_exc()}")
     
-    with col2:
+    with col3:
         if st.button("Отредактировать до финала"):
             if "draft" not in st.session_state:
                 st.warning("Сначала сгенерируйте черновик.")
             else:
                 with st.spinner("Редактура..."):
                     try:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        status_text.text("🔄 Инициализация редактуры...")
+                        progress_bar.progress(10)
+                        
+                        status_text.text("✏️ Редактирование и стилизация...")
+                        progress_bar.progress(40)
+                        
                         revised = pipeline.run_revision_step(
                             course_id=selected_course_id,
                             lecture_id=lecture_id,
-                            raw_lecture_text=st.session_state.draft
+                            raw_lecture_text=st.session_state.draft,
+                            model_name=selected_model
                         )
+                        
+                        from src.utils.text_postprocessing import count_words
+                        word_count = count_words(revised)
+                        
+                        # Get target length for display
+                        lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                        target_length = lecture.get("target_length", 4000) if lecture else 4000
+                        
+                        if word_count >= target_length:
+                            status_text.text(f"✅ Редактура завершена: {word_count} слов (цель: {target_length})")
+                        else:
+                            status_text.text(f"⚙️ Расширение до целевого объёма... ({word_count} → {target_length} слов)")
+                            progress_bar.progress(70)
+                            # Pipeline will handle expansion automatically
+                            revised = pipeline.run_revision_step(
+                                course_id=selected_course_id,
+                                lecture_id=lecture_id,
+                                raw_lecture_text=st.session_state.draft,
+                                model_name=selected_model
+                            )
+                            final_word_count = count_words(revised)
+                            status_text.text(f"✅ Редактура завершена: {final_word_count} слов (цель: {target_length})")
+                        
+                        progress_bar.progress(100)
                         st.session_state.final = revised
-                        st.success("Финальная версия готова!")
+                        st.success(f"Финальная версия готова! Объём: {count_words(revised)} слов")
+                        progress_bar.empty()
+                        status_text.empty()
+                    except Exception as e:
+                        st.error(f"Ошибка: {str(e)}")
+                        import traceback
+                        st.error(f"Детали: {traceback.format_exc()}")
+    
+    with col4:
+        if st.button("Сгенерировать резюме лекции"):
+            if "outline" not in st.session_state:
+                st.warning("Сначала сгенерируйте план.")
+            else:
+                with st.spinner("Генерация резюме лекции (600–800 слов)..."):
+                    try:
+                        from src.core.brief_draft_generator import generate_lecture_summary
+                        
+                        # Get lecture metadata
+                        lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                        metadata = {
+                            "title": lecture.get("title", "") if lecture else "",
+                            "subtitle": lecture.get("subtitle", "") if lecture else "",
+                            "keywords": lecture.get("keywords", []) if lecture else []
+                        }
+                        
+                        # Get PDF summary if available
+                        sources_data = st.session_state.get("sources_data", {})
+                        pdf_summary = sources_data.get("full_summary", "")
+                        
+                        # Generate lecture summary
+                        lecture_summary = generate_lecture_summary(
+                            metadata=metadata,
+                            pdf_summary=pdf_summary,
+                            model_name=selected_model
+                        )
+                        
+                        st.session_state["lecture_summary"] = lecture_summary
+                        st.success("Резюме лекции готово!")
                     except Exception as e:
                         st.error(f"Ошибка: {str(e)}")
     
-    with col3:
+    with col5:
         if st.button("Извлечь глоссарий"):
             if "final" not in st.session_state:
                 st.warning("Сначала создайте финальную версию.")
@@ -298,13 +498,227 @@ def render_lecture_wizard_page():
                         st.error(f"Ошибка: {str(e)}")
     
     # Display outputs
+    if "brief_draft" in st.session_state:
+        with st.expander("Краткий черновик лекции"):
+            st.markdown(st.session_state.brief_draft)
+            
+            # Export brief draft to DOCX
+            st.subheader("Экспорт краткого черновика")
+            try:
+                import tempfile
+                from src.export.docx_exporter import export_lecture_to_docx
+                
+                lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                lecture_title = lecture.get("title", "Лекция") if lecture else "Лекция"
+                lecture_subtitle = lecture.get("subtitle", "") if lecture else ""
+                lecture_keywords = lecture.get("keywords", []) if lecture else []
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                    tmp_path = tmp.name
+                
+                export_lecture_to_docx(
+                    title=f"{lecture_title} (Краткий вариант)",
+                    subtitle=lecture_subtitle,
+                    keywords=lecture_keywords,
+                    lecture_text=st.session_state.brief_draft,
+                    bibliography=None,
+                    file_path=tmp_path
+                )
+                
+                with open(tmp_path, "rb") as f:
+                    docx_data = f.read()
+                
+                safe_title = "".join(c for c in lecture_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                file_name = f"{safe_title}_brief.docx" if safe_title else f"lecture_{lecture_id}_brief.docx"
+                
+                st.download_button(
+                    label="📥 Скачать краткий черновик в .docx",
+                    data=docx_data,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+            except Exception as e:
+                st.error(f"Ошибка при создании DOCX: {str(e)}")
+    
+    if "lecture_summary" in st.session_state:
+        with st.expander("✨ Резюме лекции (600–800 слов)"):
+            st.markdown(st.session_state.lecture_summary)
+            
+            # Export lecture summary to DOCX
+            st.subheader("Экспорт резюме")
+            try:
+                import tempfile
+                from src.export.docx_exporter import export_lecture_to_docx
+                
+                lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                lecture_title = lecture.get("title", "Лекция") if lecture else "Лекция"
+                lecture_subtitle = lecture.get("subtitle", "") if lecture else ""
+                lecture_keywords = lecture.get("keywords", []) if lecture else []
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                    tmp_path = tmp.name
+                
+                export_lecture_to_docx(
+                    title=f"{lecture_title} (Резюме)",
+                    subtitle=lecture_subtitle,
+                    keywords=lecture_keywords,
+                    lecture_text=st.session_state.lecture_summary,
+                    bibliography=None,
+                    file_path=tmp_path
+                )
+                
+                with open(tmp_path, "rb") as f:
+                    docx_data = f.read()
+                
+                safe_title = "".join(c for c in lecture_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                file_name = f"{safe_title}_summary.docx" if safe_title else f"lecture_{lecture_id}_summary.docx"
+                
+                st.download_button(
+                    label="📥 Скачать резюме в .docx",
+                    data=docx_data,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+            except Exception as e:
+                st.error(f"Ошибка при создании DOCX: {str(e)}")
+    
     if "draft" in st.session_state:
         with st.expander("Черновик лекции"):
             st.markdown(st.session_state.draft)
+            
+            # Export draft to DOCX
+            st.subheader("Экспорт черновика")
+            try:
+                import tempfile
+                from src.export.docx_exporter import export_lecture_to_docx
+                
+                lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+                lecture_title = lecture.get("title", "Лекция") if lecture else "Лекция"
+                lecture_subtitle = lecture.get("subtitle", "") if lecture else ""
+                lecture_keywords = lecture.get("keywords", []) if lecture else []
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                    tmp_path = tmp.name
+                
+                export_lecture_to_docx(
+                    title=f"{lecture_title} (Черновик)",
+                    subtitle=lecture_subtitle,
+                    keywords=lecture_keywords,
+                    lecture_text=st.session_state.draft,
+                    bibliography=None,
+                    file_path=tmp_path
+                )
+                
+                with open(tmp_path, "rb") as f:
+                    docx_data = f.read()
+                
+                safe_title = "".join(c for c in lecture_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                file_name = f"{safe_title}_draft.docx" if safe_title else f"lecture_{lecture_id}_draft.docx"
+                
+                st.download_button(
+                    label="📥 Скачать черновик в .docx",
+                    data=docx_data,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+            except Exception as e:
+                st.error(f"Ошибка при создании DOCX: {str(e)}")
     
     if "final" in st.session_state:
         with st.expander("Финальная лекция"):
             st.markdown(st.session_state.final)
+            
+            # Export to DOCX button
+            st.subheader("Экспорт")
+            
+            # Get lecture metadata
+            lecture = course_manager.get_lecture(selected_course_id, lecture_id)
+            lecture_title = lecture.get("title", "Лекция") if lecture else "Лекция"
+            lecture_subtitle = lecture.get("subtitle", "") if lecture else ""
+            lecture_keywords = lecture.get("keywords", []) if lecture else []
+            
+            # Format bibliography if available
+            bibliography_text = None
+            if "bibliography" in st.session_state:
+                bib = st.session_state.bibliography
+                bib_lines = []
+                
+                # Core bibliography
+                if bib.get("core"):
+                    bib_lines.append("Основные работы (Core):")
+                    for entry in bib["core"]:
+                        authors = ", ".join(entry.get("authors", []))
+                        year = entry.get("year", "")
+                        title = entry.get("title", "")
+                        bib_lines.append(f"{authors} ({year}). {title}")
+                    bib_lines.append("")
+                
+                # Recent bibliography
+                if bib.get("recent"):
+                    bib_lines.append("Недавние работы (Recent):")
+                    for entry in bib["recent"]:
+                        authors = ", ".join(entry.get("authors", []))
+                        year = entry.get("year", "")
+                        title = entry.get("title", "")
+                        bib_lines.append(f"{authors} ({year}). {title}")
+                
+                bibliography_text = "\n".join(bib_lines) if bib_lines else None
+            
+            # Export to DOCX
+            try:
+                # Create temporary file for export
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                    tmp_path = tmp.name
+                
+                # Export lecture to DOCX
+                export_lecture_to_docx(
+                    title=lecture_title,
+                    subtitle=lecture_subtitle,
+                    keywords=lecture_keywords,
+                    lecture_text=st.session_state.final,
+                    bibliography=bibliography_text,
+                    file_path=tmp_path
+                )
+                
+                # Read the file data
+                with open(tmp_path, "rb") as f:
+                    docx_data = f.read()
+                
+                # Clean filename
+                safe_title = "".join(c for c in lecture_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                file_name = f"{safe_title}.docx" if safe_title else f"lecture_{lecture_id}.docx"
+                
+                # Create download button
+                st.download_button(
+                    label="📥 Скачать лекцию в .docx",
+                    data=docx_data,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+                    
+            except Exception as e:
+                st.error(f"Ошибка при создании DOCX файла: {str(e)}")
     
     if "glossary" in st.session_state:
         with st.expander("Глоссарий"):

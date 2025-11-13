@@ -134,11 +134,23 @@ def render_course_setup_page():
                 
                 with col2:
                     from src.core.lecture_storage import delete_lecture
-                    if st.button("🗑️ Удалить", key=f"delete_{selected_course_id}_{lecture_id}", type="secondary"):
-                        try:
-                            delete_lecture(selected_course_id, lecture_id)
-                            st.success(f"Лекция '{lecture_data.get('title', 'Без названия')}' удалена!")
+                    col_edit, col_delete = st.columns(2)
+                    
+                    with col_edit:
+                        if st.button("📝 Открыть", key=f"open_{selected_course_id}_{lecture_id}"):
+                            st.session_state["selected_lecture"] = {
+                                "course_id": selected_course_id,
+                                "lecture_id": lecture_id
+                            }
+                            st.session_state["current_page"] = "lecture_editor"
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"Ошибка при удалении: {str(e)}")
+                    
+                    with col_delete:
+                        if st.button("🗑️ Удалить", key=f"delete_{selected_course_id}_{lecture_id}", type="secondary"):
+                            try:
+                                delete_lecture(selected_course_id, lecture_id)
+                                st.success(f"Лекция '{lecture_data.get('title', 'Без названия')}' удалена!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Ошибка при удалении: {str(e)}")
 

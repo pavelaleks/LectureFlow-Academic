@@ -1,26 +1,29 @@
 """
-PDF summarization using DeepSeek.
+PDF summarization using Grok (primary) or DeepSeek (fallback).
+Grok is used for large document analysis due to its 2M token context window.
 """
 from typing import List, Dict
-from src.llm.deepseek_client import DeepSeekClient
+from src.llm.model_registry import get_llm_client
 from src.utils.io_utils import read_text, write_json
+from src.utils.text_postprocessing import calculate_max_tokens
+from src.utils.llm_utils import auto_extend_text
 from pathlib import Path
 import config
 
 
 def summarize_pdf_chunks(
     chunks: List[str],
-    deepseek: DeepSeekClient,
+    llm_client,  # Accept any LLM client (Grok, DeepSeek, etc.)
     prompt_template: str,
     course_id: str,
     lecture_id: str
 ) -> Dict:
     """
-    Summarize PDF chunks using DeepSeek.
+    Summarize PDF chunks using LLM (Grok recommended for large documents).
     
     Args:
         chunks: List of text chunks
-        deepseek: DeepSeek client instance
+        llm_client: LLM client instance (Grok, DeepSeek, etc.)
         prompt_template: Template for summarization prompt
         course_id: Course ID for saving
         lecture_id: Lecture ID for saving
@@ -31,16 +34,50 @@ def summarize_pdf_chunks(
     chunk_summaries = []
     all_key_ideas = []
     
+    # Determine max_tokens based on model type
+    # Grok can handle much larger context
+    is_grok = hasattr(llm_client, 'model') and 'grok' in str(llm_client.model).lower()
+    
     # Summarize each chunk
     for i, chunk in enumerate(chunks):
         user_prompt = prompt_template.format(chunk_text=chunk)
         
-        summary = deepseek.chat(
-            system_prompt="Ты — эксперт по анализу научных текстов. Делай краткие, точные резюме.",
-            user_prompt=user_prompt,
-            temperature=0.5,
-            max_tokens=1000
-        )
+        # Use appropriate max_tokens based on model
+        if is_grok:
+            max_tokens = 50000  # Grok supports up to 2M tokens
+        else:
+            max_tokens = calculate_max_tokens(1500)
+        
+        # Use Grok for PDF analysis if available (simplified call)
+        if is_grok:
+            from src.llm.grok_client import call_grok
+            # Build full prompt for Grok
+            full_prompt = f"""Ты — эксперт по анализу научных текстов. Делай краткие, точные резюме.
+
+{user_prompt}"""
+            # Use reasoning model for PDF analysis - get default_model from client
+            if hasattr(llm_client, 'default_model'):
+                grok_model = llm_client.default_model
+            else:
+                grok_model = None  # Will use default in call_grok
+            summary = call_grok(full_prompt, model=grok_model)
+        else:
+            summary = llm_client.chat(
+                system_prompt="Ты — эксперт по анализу научных текстов. Делай краткие, точные резюме.",
+                user_prompt=user_prompt,
+                temperature=0.5,
+                max_tokens=max_tokens
+            )
+        
+        # Auto-extend if incomplete (only for non-Grok models)
+        if not is_grok:
+            summary = auto_extend_text(
+                llm_client,
+                "Ты — эксперт по анализу научных текстов. Делай краткие, точные резюме.",
+                user_prompt,
+                summary,
+                max_tokens
+            )
         
         chunk_summaries.append({
             "chunk_index": i,
@@ -63,12 +100,36 @@ def summarize_pdf_chunks(
 4. Методологические опоры
 5. Значение для лекции"""
     
-    full_summary = deepseek.chat(
-        system_prompt="Ты — эксперт по анализу научных текстов.",
-        user_prompt=combined_prompt,
-        temperature=0.5,
-        max_tokens=2000
-    )
+    # Use appropriate max_tokens for combined summary
+    if is_grok:
+        from src.llm.grok_client import call_grok
+        full_prompt = f"""Ты — эксперт по анализу научных текстов.
+
+{combined_prompt}"""
+        # Use reasoning model for PDF analysis - get default_model from client
+        if hasattr(llm_client, 'default_model'):
+            grok_model = llm_client.default_model
+        else:
+            grok_model = None  # Will use default in call_grok
+        full_summary = call_grok(full_prompt, model=grok_model)
+    else:
+        max_tokens = calculate_max_tokens(2500)
+        full_summary = llm_client.chat(
+            system_prompt="Ты — эксперт по анализу научных текстов.",
+            user_prompt=combined_prompt,
+            temperature=0.5,
+            max_tokens=max_tokens
+        )
+    
+    # Auto-extend if incomplete (only for non-Grok models)
+    if not is_grok:
+        full_summary = auto_extend_text(
+            llm_client,
+            "Ты — эксперт по анализу научных текстов.",
+            combined_prompt,
+            full_summary,
+            max_tokens
+        )
     
     # Extract key ideas
     key_ideas_prompt = f"""Из следующего резюме извлеки только ключевые идеи в виде списка (bullet points):
@@ -77,12 +138,36 @@ def summarize_pdf_chunks(
 
 Верни только список ключевых идей, по одной на строку."""
     
-    key_ideas_text = deepseek.chat(
-        system_prompt="Ты — эксперт по анализу научных текстов.",
-        user_prompt=key_ideas_prompt,
-        temperature=0.3,
-        max_tokens=1000
-    )
+    # Use appropriate max_tokens for key ideas
+    if is_grok:
+        from src.llm.grok_client import call_grok
+        full_prompt = f"""Ты — эксперт по анализу научных текстов.
+
+{key_ideas_prompt}"""
+        # Use reasoning model for PDF analysis - get default_model from client
+        if hasattr(llm_client, 'default_model'):
+            grok_model = llm_client.default_model
+        else:
+            grok_model = None  # Will use default in call_grok
+        key_ideas_text = call_grok(full_prompt, model=grok_model)
+    else:
+        max_tokens = calculate_max_tokens(1500)
+        key_ideas_text = llm_client.chat(
+            system_prompt="Ты — эксперт по анализу научных текстов.",
+            user_prompt=key_ideas_prompt,
+            temperature=0.3,
+            max_tokens=max_tokens
+        )
+    
+    # Auto-extend if incomplete (only for non-Grok models)
+    if not is_grok:
+        key_ideas_text = auto_extend_text(
+            llm_client,
+            "Ты — эксперт по анализу научных текстов.",
+            key_ideas_prompt,
+            key_ideas_text,
+            max_tokens
+        )
     
     key_ideas = [line.strip("- •").strip() for line in key_ideas_text.split("\n") if line.strip() and line.strip().startswith(("-", "•"))]
     
