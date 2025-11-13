@@ -113,8 +113,32 @@ def render_course_setup_page():
             )
             
             for lecture_id, lecture_data in sorted_lectures:
-                with st.expander(f"Лекция {lecture_data.get('order', 0)}: {lecture_data.get('title', 'Без названия')}"):
-                    st.write(f"**Подзаголовок:** {lecture_data.get('subtitle', '—')}")
-                    st.write(f"**Ключевые слова:** {', '.join(lecture_data.get('keywords', []))}")
-                    st.write(f"**Целевой объём:** {lecture_data.get('target_length', 4000)} слов")
+                col1, col2 = st.columns([4, 1])
+                
+                with col1:
+                    with st.expander(f"Лекция {lecture_data.get('order', 0)}: {lecture_data.get('title', 'Без названия')}"):
+                        st.write(f"**Подзаголовок:** {lecture_data.get('subtitle', '—')}")
+                        st.write(f"**Ключевые слова:** {', '.join(lecture_data.get('keywords', []))}")
+                        st.write(f"**Целевой объём:** {lecture_data.get('target_length', 4000)} слов")
+                        
+                        # Display OpenAlex metadata if exists
+                        metadata = lecture_data.get('metadata', {})
+                        if metadata.get('core_keywords') or metadata.get('core_authors') or metadata.get('recent_keywords'):
+                            st.write("**Параметры OpenAlex:**")
+                            if metadata.get('core_keywords'):
+                                st.write(f"- Core keywords: {metadata['core_keywords']}")
+                            if metadata.get('core_authors'):
+                                st.write(f"- Core authors: {metadata['core_authors']}")
+                            if metadata.get('recent_keywords'):
+                                st.write(f"- Recent keywords: {metadata['recent_keywords']}")
+                
+                with col2:
+                    from src.core.lecture_storage import delete_lecture
+                    if st.button("🗑️ Удалить", key=f"delete_{selected_course_id}_{lecture_id}", type="secondary"):
+                        try:
+                            delete_lecture(selected_course_id, lecture_id)
+                            st.success(f"Лекция '{lecture_data.get('title', 'Без названия')}' удалена!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Ошибка при удалении: {str(e)}")
 

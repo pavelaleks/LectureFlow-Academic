@@ -11,7 +11,7 @@ from src.pdf.pdf_summarizer import summarize_pdf_chunks
 from src.core.course_manager import CourseManager
 from src.core.prompts_loader import load_prompt, render_prompt
 from src.utils.io_utils import read_json, write_json, write_text, read_text
-from src.utils.text_postprocessing import normalize_text
+from src.utils.text_postprocessing import normalize_text, count_words
 import config
 import uuid
 
@@ -85,7 +85,9 @@ class LecturePipeline:
         self,
         course_id: str,
         lecture_id: str,
-        keywords: List[str]
+        core_keywords: str = "",
+        core_authors: str = "",
+        recent_keywords: str = ""
     ) -> Dict[str, List[Dict]]:
         """
         Search OpenAlex and build bibliography.
@@ -93,17 +95,17 @@ class LecturePipeline:
         Args:
             course_id: Course identifier
             lecture_id: Lecture identifier
-            keywords: List of keywords for search
+            core_keywords: Keywords for core works search
+            core_authors: Authors for core works filter
+            recent_keywords: Keywords for recent works search
         
         Returns:
             Dictionary with "core" and "recent" bibliography lists
         """
-        query = " ".join(keywords)
-        
-        bibliography = self.openalex.top_core_and_recent(
-            query=query,
-            core_count=10,
-            recent_count=10
+        bibliography = self.openalex.generate_bibliography(
+            core_keywords=core_keywords,
+            core_authors=core_authors,
+            recent_keywords=recent_keywords
         )
         
         # Save bibliography
@@ -252,6 +254,10 @@ class LecturePipeline:
         Returns:
             Draft lecture text
         """
+        # Get lecture metadata for target_length
+        lecture = self.course_manager.get_lecture(course_id, lecture_id)
+        target_length = lecture.get("target_length", 4000) if lecture else 4000
+        
         # Load draft prompt template
         draft_template = load_prompt("steps/step4_lecture_draft.md")
         
@@ -268,6 +274,7 @@ class LecturePipeline:
         draft_prompt = render_prompt(
             draft_template,
             outline_text=outline_text,
+            target_length=target_length,
             uploaded_sources_keypoints="\n".join(f"- {kp}" for kp in uploaded_sources_keypoints),
             core_bibliography=core_bib,
             recent_bibliography=recent_bib
@@ -276,12 +283,42 @@ class LecturePipeline:
         # Load system prompt
         system_prompt = load_prompt("system/base_system_prompt.md")
         
+        # Calculate safe max_tokens based on target_length
+        max_tokens = self.deepseek.safe_max_tokens(target_length, default_tokens=6000)
+        
         draft = self.deepseek.chat(
             system_prompt=system_prompt,
             user_prompt=draft_prompt,
             temperature=0.8,
-            max_tokens=6000
+            max_tokens=max_tokens
         )
+        
+        # Post-check: verify word count and expand if needed
+        word_count = count_words(draft)
+        if word_count < target_length:
+            expansion_prompt = f"""Текст лекции получился слишком коротким ({word_count} слов вместо требуемых {target_length} слов).
+
+Текущий текст:
+{draft}
+
+ОБЯЗАТЕЛЬНО расширь текст до {target_length} слов, добавив:
+- аналитические комментарии
+- дополнительные примеры
+- методологические пояснения
+- развернутые переходы между разделами
+- иллюстративные детали
+
+Сохрани весь существующий контент и расширь его."""
+            
+            # Calculate safe max_tokens for expansion
+            expansion_max_tokens = self.deepseek.safe_max_tokens(target_length, default_tokens=7000)
+            
+            draft = self.deepseek.chat(
+                system_prompt=system_prompt,
+                user_prompt=expansion_prompt,
+                temperature=0.7,
+                max_tokens=expansion_max_tokens
+            )
         
         # Save draft
         output_dir = config.OUTPUTS_DIR / course_id
@@ -311,10 +348,18 @@ class LecturePipeline:
         if not lecture:
             raise ValueError(f"Lecture {lecture_id} not found")
         
+        target_length = lecture.get("target_length", 4000)
         lecture_order = lecture.get("order", 0)
         previous_lectures_summary = self.course_manager.get_previous_lectures_summary(
             course_id, lecture_order
         )
+        
+        # Get uploaded sources summary if available
+        sources_file = config.UPLOADS_DIR / course_id / lecture_id / "sources.json"
+        uploaded_sources_summary = ""
+        if sources_file.exists():
+            sources_data = read_json(sources_file)
+            uploaded_sources_summary = sources_data.get("full_summary", "")
         
         # Load style reference
         style_reference = load_prompt("system/style_samira.md")
@@ -324,20 +369,52 @@ class LecturePipeline:
         
         revision_prompt = render_prompt(
             revision_template,
+            target_length=target_length,
             style_reference_text=style_reference,
             raw_lecture_text=raw_lecture_text,
-            previous_lectures_summary=previous_lectures_summary
+            previous_lectures_summary=previous_lectures_summary,
+            uploaded_sources_summary=uploaded_sources_summary
         )
         
         # Load system prompt
         system_prompt = load_prompt("system/base_system_prompt.md")
         
+        # Calculate safe max_tokens based on target_length
+        max_tokens = self.deepseek.safe_max_tokens(target_length, default_tokens=6000)
+        
         revised = self.deepseek.chat(
             system_prompt=system_prompt,
             user_prompt=revision_prompt,
             temperature=0.7,
-            max_tokens=6000
+            max_tokens=max_tokens
         )
+        
+        # Post-check: verify word count and expand if needed
+        word_count = count_words(revised)
+        if word_count < target_length:
+            expansion_prompt = f"""Текст лекции после редактуры получился слишком коротким ({word_count} слов вместо требуемых {target_length} слов).
+
+Текущий текст:
+{revised}
+
+ОБЯЗАТЕЛЬНО расширь текст до {target_length} слов, добавив:
+- плавные переходы между блоками
+- дополнительные уровни детализации
+- развернутые пояснения ключевых понятий
+- аналитические примеры
+- методологические комментарии
+
+ВАЖНО: НЕ сокращай существующий текст, только расширяй его."""
+            
+            # Calculate safe max_tokens for expansion
+            expansion_max_tokens = self.deepseek.safe_max_tokens(target_length, default_tokens=7000)
+            
+            revised = self.deepseek.chat(
+                system_prompt=system_prompt,
+                user_prompt=expansion_prompt,
+                temperature=0.7,
+                max_tokens=expansion_max_tokens
+            )
         
         # Save revised lecture
         output_dir = config.OUTPUTS_DIR / course_id

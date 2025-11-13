@@ -22,6 +22,27 @@ class DeepSeekClient:
         )
         self.model = config.DEEPSEEK_MODEL
     
+    @staticmethod
+    def safe_max_tokens(target_words: int = None, default_tokens: int = 2000) -> int:
+        """
+        Calculate safe max_tokens value that never exceeds DeepSeek limit.
+        
+        Args:
+            target_words: Target word count (optional)
+            default_tokens: Default tokens if target_words not provided
+        
+        Returns:
+            Safe max_tokens value (max 7800)
+        """
+        if target_words is not None:
+            # Аккуратный пересчёт слов в токены (примерно 1.5 токена на слово для русского)
+            approx_tokens = int(target_words * 1.5)
+            # Финальный лимит DeepSeek
+            return min(approx_tokens, 7800)
+        else:
+            # Если нет target_words, используем дефолт, но ограничиваем лимитом
+            return min(default_tokens, 7800)
+    
     def chat(
         self,
         system_prompt: str,

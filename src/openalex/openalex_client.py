@@ -151,4 +151,62 @@ class OpenAlexClient:
             "core": self.build_bibliography(core_works),
             "recent": self.build_bibliography(recent_works)
         }
+    
+    def generate_bibliography(
+        self,
+        core_keywords: str = "",
+        core_authors: str = "",
+        recent_keywords: str = ""
+    ) -> Dict[str, List[Dict]]:
+        """
+        Generate bibliography using OpenAlex with custom parameters.
+        
+        Args:
+            core_keywords: Keywords for core works search
+            core_authors: Authors for core works filter (comma-separated)
+            recent_keywords: Keywords for recent works search
+        
+        Returns:
+            Dictionary with "core" and "recent" lists of bibliography entries
+        """
+        # Build core query
+        core_query = core_keywords.replace(",", " ").strip() if core_keywords else ""
+        
+        # Build core search params
+        core_params = {
+            "search": core_query if core_query else "research",
+            "per_page": 10,
+            "sort": "cited_by_count:desc"
+        }
+        
+        # Add author filter if provided
+        if core_authors:
+            author_names = [a.strip() for a in core_authors.split(",") if a.strip()]
+            if author_names:
+                # OpenAlex filter format for authors - use OR operator
+                # Format: author.display_name:"Name1"|author.display_name:"Name2"
+                author_filters = [f'author.display_name:"{name}"' for name in author_names]
+                core_params["filter"] = "|".join(author_filters)
+        
+        # Get core works
+        core_result = self._make_request("works", core_params)
+        core_works = core_result.get("results", [])
+        
+        # Build recent query
+        recent_query = recent_keywords.replace(",", " ").strip() if recent_keywords else core_query
+        
+        # Get recent works (sorted by publication date)
+        recent_params = {
+            "search": recent_query if recent_query else "research",
+            "per_page": 10,
+            "sort": "publication_date:desc"
+        }
+        
+        recent_result = self._make_request("works", recent_params)
+        recent_works = recent_result.get("results", [])
+        
+        return {
+            "core": self.build_bibliography(core_works),
+            "recent": self.build_bibliography(recent_works)
+        }
 

@@ -51,7 +51,7 @@ def render_lecture_wizard_page():
         
         with col2:
             keywords_input = st.text_input("Ключевые слова (через запятую)", value="")
-            target_length = st.number_input("Целевой объём (слов)", min_value=1000, value=4000)
+            target_length = st.number_input("Целевой объём (слов)", min_value=3000, value=3800, step=200)
         
         save_metadata = st.form_submit_button("Сохранить метаданные")
         
@@ -105,28 +105,80 @@ def render_lecture_wizard_page():
     st.header("Шаг 4: Библиография OpenAlex")
     
     lecture = course_manager.get_lecture(selected_course_id, lecture_id)
-    keywords = lecture.get("keywords", []) if lecture else []
     
-    if keywords:
-        if st.button("Сгенерировать библиографию"):
-            with st.spinner("Поиск в OpenAlex..."):
-                try:
-                    bibliography = pipeline.run_bibliography_step(
-                        course_id=selected_course_id,
-                        lecture_id=lecture_id,
-                        keywords=keywords
-                    )
-                    st.session_state.bibliography = bibliography
-                    st.success("Библиография сгенерирована!")
-                except Exception as e:
-                    st.error(f"Ошибка: {str(e)}")
-        
-        if "bibliography" in st.session_state:
-            bibliography = st.session_state.bibliography
-            display_bibliography_table(bibliography.get("core", []), "Основные работы (Core)")
-            display_bibliography_table(bibliography.get("recent", []), "Недавние работы (Recent)")
+    # Load saved OpenAlex parameters or use defaults
+    if lecture:
+        default_core_keywords = lecture.get("metadata", {}).get("core_keywords", st.session_state.get("core_keywords", ""))
+        default_core_authors = lecture.get("metadata", {}).get("core_authors", st.session_state.get("core_authors", ""))
+        default_recent_keywords = lecture.get("metadata", {}).get("recent_keywords", st.session_state.get("recent_keywords", ""))
     else:
-        st.warning("Сначала укажите ключевые слова в метаданных лекции.")
+        default_core_keywords = st.session_state.get("core_keywords", "")
+        default_core_authors = st.session_state.get("core_authors", "")
+        default_recent_keywords = st.session_state.get("recent_keywords", "")
+    
+    st.subheader("Параметры запроса OpenAlex")
+    
+    core_keywords = st.text_input(
+        "Core keywords (через запятую)",
+        value=default_core_keywords,
+        key="core_keywords_input"
+    )
+    
+    core_authors = st.text_input(
+        "Core authors (через запятую)",
+        value=default_core_authors,
+        key="core_authors_input"
+    )
+    
+    recent_keywords = st.text_input(
+        "Recent keywords (через запятую)",
+        value=default_recent_keywords,
+        key="recent_keywords_input"
+    )
+    
+    # Save to session state
+    st.session_state["core_keywords"] = core_keywords
+    st.session_state["core_authors"] = core_authors
+    st.session_state["recent_keywords"] = recent_keywords
+    
+    # Save to lecture metadata when button is clicked
+    if st.button("Сохранить параметры OpenAlex"):
+        course_manager.add_or_update_lecture(
+            course_id=selected_course_id,
+            lecture_id=lecture_id,
+            title=lecture.get("title", "") if lecture else "",
+            subtitle=lecture.get("subtitle", "") if lecture else "",
+            order=lecture.get("order", 0) if lecture else 0,
+            keywords=lecture.get("keywords", []) if lecture else [],
+            target_length=lecture.get("target_length", 3800) if lecture else 3800,
+            metadata={
+                **(lecture.get("metadata", {}) if lecture else {}),
+                "core_keywords": core_keywords,
+                "core_authors": core_authors,
+                "recent_keywords": recent_keywords
+            }
+        )
+        st.success("Параметры сохранены!")
+    
+    if st.button("Сгенерировать библиографию"):
+        with st.spinner("Поиск в OpenAlex..."):
+            try:
+                bibliography = pipeline.run_bibliography_step(
+                    course_id=selected_course_id,
+                    lecture_id=lecture_id,
+                    core_keywords=core_keywords,
+                    core_authors=core_authors,
+                    recent_keywords=recent_keywords
+                )
+                st.session_state.bibliography = bibliography
+                st.success("Библиография сгенерирована!")
+            except Exception as e:
+                st.error(f"Ошибка: {str(e)}")
+    
+    if "bibliography" in st.session_state:
+        bibliography = st.session_state.bibliography
+        display_bibliography_table(bibliography.get("core", []), "Основные работы (Core)")
+        display_bibliography_table(bibliography.get("recent", []), "Недавние работы (Recent)")
     
     # Step 5: Bibliography Summary
     st.header("Шаг 5: Резюме библиографии")

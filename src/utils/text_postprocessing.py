@@ -22,3 +22,8 @@ def normalize_text(text: str) -> str:
     text = re.sub(r'[\u200b-\u200f\ufeff]', '', text)
     return text.strip()
 
+
+def count_words(text: str) -> int:
+    """Count words in text."""
+    return len(text.split())
+
