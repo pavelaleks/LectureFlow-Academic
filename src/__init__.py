@@ -1,0 +1,2 @@
+"""LectureFlow Academic source package."""
+

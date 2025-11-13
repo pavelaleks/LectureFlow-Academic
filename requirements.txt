@@ -1,0 +1,12 @@
+streamlit
+openai
+requests
+httpx
+python-dotenv
+pydantic
+pandas
+markdown-it-py
+pdfplumber
+pymupdf
+python-docx
+
