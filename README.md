@@ -302,19 +302,60 @@ python3 scripts/export_data.py export --output backup_lectureflow
 
 Выполните стандартную установку проекта (следуйте инструкциям выше).
 
-#### Шаг 3: На новом компьютере — импорт данных
+#### Шаг 3: На новом компьютере — размещение резервной копии
 
-После настройки проекта и активации виртуального окружения:
+**Куда положить папку с резервной копией:**
+
+- **Рекомендуется:** Положите папку `backup_lectureflow` в корень проекта (рядом с папками `data/` и `outputs/`)
+- **Альтернатива:** Можно положить в любое удобное место (например, на Рабочий стол или в папку Документы)
+
+**Пример структуры (рекомендуемый вариант):**
+
+```
+Documents/
+└── LectureFlow-Academic/          # Проект
+    ├── app.py
+    ├── data/
+    ├── outputs/
+    ├── scripts/
+    └── backup_lectureflow/        # ← Папка с резервной копией (положите сюда)
+        ├── data/
+        └── outputs/
+```
+
+#### Шаг 4: На новом компьютере — импорт данных
+
+После размещения резервной копии и активации виртуального окружения:
+
+**Если папка находится в корне проекта (рекомендуется):**
 
 ```bash
 # Windows (PowerShell)
+cd C:\Users\%USERNAME%\Documents\LectureFlow-Academic
 .\venv\Scripts\Activate.ps1
-python scripts/export_data.py import --source путь\к\папке\backup_lectureflow
+python scripts/export_data.py import --source backup_lectureflow
 
 # macOS (Terminal)
+cd ~/Documents/LectureFlow-Academic
 source venv/bin/activate
-python3 scripts/export_data.py import --source путь/к/папке/backup_lectureflow
+python3 scripts/export_data.py import --source backup_lectureflow
 ```
+
+**Если папка находится в другом месте:**
+
+```bash
+# Windows (PowerShell) - пример, если папка на Рабочем столе
+cd C:\Users\%USERNAME%\Documents\LectureFlow-Academic
+.\venv\Scripts\Activate.ps1
+python scripts/export_data.py import --source "C:\Users\%USERNAME%\Desktop\backup_lectureflow"
+
+# macOS (Terminal) - пример, если папка на Рабочем столе
+cd ~/Documents/LectureFlow-Academic
+source venv/bin/activate
+python3 scripts/export_data.py import --source ~/Desktop/backup_lectureflow
+```
+
+> **Совет:** Можно указать как относительный путь (от корня проекта), так и абсолютный путь (полный путь к папке).
 
 Скрипт автоматически восстановит все данные. **Перезапустите Streamlit приложение** для применения изменений.
 
