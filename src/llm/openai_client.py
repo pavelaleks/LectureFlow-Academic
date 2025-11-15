@@ -41,3 +41,5 @@ def call_openai(prompt: str, model: str = "gpt-4o-mini") -> str:
         return f"OpenAI API error: {str(e)}"
 
 
+
+

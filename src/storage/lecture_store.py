@@ -156,3 +156,5 @@ def list_all_lectures() -> list[tuple[str, str, Dict]]:
     return all_lectures
 
 
+
+
